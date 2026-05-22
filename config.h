@@ -1,0 +1,2 @@
+// Fichero para parámetros configurables
+
