@@ -40,6 +40,9 @@
 
 #include "drivers/rgb.h"
 
+extern SemaphoreHandle_t semaforo_freertos1;
+extern SemaphoreHandle_t semaforo_freertos2;
+
 // ==============================================================================
 // The CPU usage in percent, in 16.16 fixed point format.
 // ==============================================================================
@@ -80,6 +83,22 @@ static int Cmd_free(int argc, char *argv[])
 #if ( configUSE_TRACE_FACILITY == 1 )
 
 extern char *__stack;
+
+static  int Cmd_reanudar(int argc, char *argv[]){
+        if(argc <2){
+            UARTprintf("Uso: reanudar <num> \n");
+            return 0;
+        }
+        int num = atoi(argv[1]);
+        if(num == 1){
+            xSemaphoreGive(semaforo_freertos1);
+
+        }else if(num == 2){
+            xSemaphoreGive(semaforo_freertos2);
+        }
+        return 0;
+}
+
 static  int Cmd_tasks(int argc, char *argv[])
 {
 	char*	pcBuffer;
@@ -182,6 +201,7 @@ tCmdLineEntry g_psCmdTable[] =
     { "?",        Cmd_help,      "        : lo mismo que help" },
     { "cpu",      Cmd_cpu,       "      : Muestra el uso de  CPU " },
     { "free",     Cmd_free,      "     : Muestra la memoria libre" },
+    {"reanudar",    Cmd_reanudar,"    <num>:Reanuda la tarea productora num"},
 #if ( configUSE_TRACE_FACILITY == 1 )
 	{ "tasks",    Cmd_tasks,     "    : Muestra informacion de las tareas" },
 #endif

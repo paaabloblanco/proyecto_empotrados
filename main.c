@@ -44,22 +44,25 @@
 #include "queue.h"
 #include "event_groups.h"
 #include "driverlib/pwm.h"
-#include "adc.h"
+#include "driverlib/adc.h"
 
 
 // Variables globales "main"
 uint32_t g_ui32CPUUsage;
 uint32_t g_ui32SystemClock;
-SemaphoreHandle_t mutexUSB, mutexUART, semaforo_freertos1;  // Para proteccion del canal USB y el caal UART -terminal-, ya que ahora lo van a usar varias tareas distintas
+SemaphoreHandle_t mutexUSB, mutexUART, semaforo_freertos1,semaforo_freertos2;  // Para proteccion del canal USB y el caal UART -terminal-, ya que ahora lo van a usar varias tareas distintas
 
 EventGroupHandle_t flagseventos;
+QueueHandle_t mailbox_freertos;
 QueueSetHandle_t grupoColas;
 QueueHandle_t cola_freertos1;
 QueueHandle_t cola_freertos2;
+EventGroupHandle_t flag_control;
 typedef struct {
     uint32_t delay;
     uint8_t idProd;
     QueueHandle_t cola;
+    SemaphoreHandle_t sem;
 } ParamsProductora;
 typedef struct {
     uint32_t id;
@@ -120,7 +123,14 @@ void vApplicationMallocFailedHook (void)
 {
     while(1);
 }
-
+void manejadora(){
+    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+    uint32_t ui32Value;
+    ADCIntClear(ADC0_BASE, 0);
+    ADCSequenceDataGet(ADC0_BASE, 0, &ui32Value);
+    xQueueOverwriteFromISR(mailbox_freertos,&ui32Value,&xHigherPriorityTaskWoken);
+    portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+}
 //*****************************************************************************
 //
 // A continuacion van las tareas...
@@ -128,7 +138,60 @@ void vApplicationMallocFailedHook (void)
 //*****************************************************************************
 
 
+static portTASK_FUNCTION(temperatura,pvParameters){
+    (void) pvParameters;
+    ADCIntEnable(ADC0_BASE, 0);
+    IntEnable(INT_ADC0SS0);
+    uint32_t temp;
+    PARAM_MENSAJE_TEMPERATURA g;
+    uint8_t pui8Frame[MAX_FRAME_SIZE];
+    int32_t i32Numdatos;
 
+
+       while(1){
+           xQueueReceive(mailbox_freertos, &temp, portMAX_DELAY);
+           g.gra = 147.5 - ((247.5 * temp) / 4096.0);
+           i32Numdatos = create_frame(pui8Frame, MENSAJE_TEMPERATURA, &g, sizeof(g), MAX_FRAME_SIZE);
+           if(i32Numdatos >= 0){
+                          xSemaphoreTake(mutexUSB, portMAX_DELAY);
+                             send_frame(pui8Frame, i32Numdatos);
+                             xSemaphoreGive(mutexUSB);
+                      }
+
+
+       }
+
+
+}
+static portTASK_FUNCTION(control, pvParameters){
+    (void) pvParameters;
+    uint8_t pui8Frame[MAX_FRAME_SIZE];
+    int32_t i32Numdatos;
+    PARAM_MENSAJE_ALARMA_COLA parametro;
+    EventBits_t flagsActivos;
+
+    while(1){
+        // Se bloquea esperando cualquier alarma
+        flagsActivos = xEventGroupWaitBits(flag_control, 0x01|0x02, pdTRUE, pdFALSE, portMAX_DELAY);
+
+        // Comprueba qué flag se activó
+        if(flagsActivos & 0x01){
+            parametro.cola = 1;
+
+        } else if(flagsActivos & 0x02){
+            parametro.cola = 2;
+
+        }
+
+        // Envía mensaje USB
+        i32Numdatos = create_frame(pui8Frame, MENSAJE_ALARMA_COLA, &parametro, sizeof(parametro), MAX_FRAME_SIZE);
+        if(i32Numdatos >= 0){
+            xSemaphoreTake(mutexUSB, portMAX_DELAY);
+            send_frame(pui8Frame, i32Numdatos);
+            xSemaphoreGive(mutexUSB);
+        }
+    }
+}
 static portTASK_FUNCTION(productora,pvParameters){
     ParamsProductora *params = (ParamsProductora *)pvParameters;
     const TickType_t delay = params->delay /portTICK_PERIOD_MS;
@@ -145,6 +208,13 @@ static portTASK_FUNCTION(productora,pvParameters){
       //  xSemaphoreGive(semaforo_freertos1 );
         if(xQueueSend(params->cola,&obj,0)!= pdTRUE){
             GPIOPinWrite(GPIO_PORTF_BASE, GPIO_PIN_1, GPIO_PIN_1);
+            xSemaphoreGive(params->sem);
+            if(params->idProd == 1){
+                xEventGroupSetBits(flag_control, 0x01);
+            }else{
+                xEventGroupSetBits(flag_control, 0x02);
+            }
+
 
         }else{
             GPIOPinWrite(GPIO_PORTF_BASE, GPIO_PIN_1, 0);
@@ -335,21 +405,38 @@ int main(void)
 
 
      //timer adc
-     MAP_SysCtlPeripheralEnable(SYSCTL_PERIPH_TIMER2));
+     MAP_SysCtlPeripheralEnable(SYSCTL_PERIPH_TIMER2);
      MAP_SysCtlPeripheralSleepEnable(SYSCTL_PERIPH_TIMER2);
      TimerConfigure(TIMER2_BASE, TIMER_CFG_PERIODIC);
-     T
+     TimerLoadSet(TIMER2_BASE,TIMER_A,40000000);
+
      //adc
      MAP_SysCtlPeripheralEnable(SYSCTL_PERIPH_ADC0);
+     MAP_SysCtlPeripheralSleepEnable(SYSCTL_PERIPH_ADC0);
+     ADCSequenceConfigure(ADC0_BASE, 0, ADC_TRIGGER_TIMER, 0);
+     ADCSequenceStepConfigure(ADC0_BASE, 0, 0, ADC_CTL_TS| ADC_CTL_END|ADC_CTL_IE);
      while(!SysCtlPeripheralReady(SYSCTL_PERIPH_ADC0)){
 
      }
+     ADCSequenceEnable(ADC0_BASE, 0);
+     ADCIntRegister(ADC0_BASE, 0, manejadora);
+
+
+     TimerControlTrigger(TIMER2_BASE, TIMER_A, true);
+     TimerEnable(TIMER2_BASE, TIMER_A);
+
+
 
     semaforo_freertos1 = xSemaphoreCreateBinary();
         if(semaforo_freertos1 == NULL) {
             while(1);  //no hay memoria para los semaforo
 
         }
+        semaforo_freertos2 = xSemaphoreCreateBinary();
+                if(semaforo_freertos2 == NULL) {
+                    while(1);  //no hay memoria para los semaforo
+
+                }
         mutexUART=xSemaphoreCreateMutex();
           if(NULL == mutexUART)
               while(1);
@@ -367,10 +454,16 @@ int main(void)
           xQueueAddToSet(cola_freertos1, grupoColas);
           xQueueAddToSet(cola_freertos2, grupoColas);
 
+          params1.sem = semaforo_freertos1;
+          params2.sem = semaforo_freertos2;
      flagseventos = xEventGroupCreate();
           if(NULL == flagseventos){
               while(1);
           }
+         mailbox_freertos = xQueueCreate(1, sizeof(uint32_t));
+         if(NULL == mailbox_freertos)while(1);
+         flag_control = xEventGroupCreate();
+         if(NULL == flag_control)while(1);
 
 
     /**                                              Creacion de tareas 									**/
@@ -402,6 +495,12 @@ int main(void)
 
            while(1);
        }
+     if(xTaskCreate(temperatura, "temp", 256, NULL, tskIDLE_PRIORITY +1, NULL) != pdPASS){
+         while(1);
+     }
+     if(xTaskCreate(control, "cont", 256, NULL, tskIDLE_PRIORITY +1, NULL) != pdPASS){
+              while(1);
+          }
 
 
     //
