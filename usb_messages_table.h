@@ -16,6 +16,8 @@ typedef enum {
     MENSAJE_INICIO,
     MENSAJE_TEMPERATURA,
     MENSAJE_ALARMA_COLA,
+    MENSAJE_OBJETIVO_INICIO,
+    MENSAJE_OBJETIVO_CUMPLIDO,
     //etc, etc...
 } messageTypes;
 
@@ -42,7 +44,12 @@ typedef struct {
 typedef struct{
     uint8_t cola;
 }PACKED PARAM_MENSAJE_ALARMA_COLA;
-
+typedef struct {
+    uint32_t objetivo;
+} PACKED PARAM_MENSAJE_OBJETIVO_INICIO;
+typedef struct {
+    bool cumplido;
+} PACKED PARAM_MENSAJE_OBJETIVO_CUMPLIDO;
 #pragma pack()    //...Pero solo para los mensajes que voy a intercambiar, no para el resto
 
 

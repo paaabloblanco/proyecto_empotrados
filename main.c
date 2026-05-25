@@ -50,8 +50,8 @@
 // Variables globales "main"
 uint32_t g_ui32CPUUsage;
 uint32_t g_ui32SystemClock;
-SemaphoreHandle_t mutexUSB, mutexUART, semaforo_freertos1,semaforo_freertos2;  // Para proteccion del canal USB y el caal UART -terminal-, ya que ahora lo van a usar varias tareas distintas
-
+SemaphoreHandle_t mutexUSB, mutexUART, semaforo_freertos1,semaforo_freertos2,semaforo_contador;  // Para proteccion del canal USB y el caal UART -terminal-, ya que ahora lo van a usar varias tareas distintas
+TaskHandle_t handleProductora1, handleProductora2;
 EventGroupHandle_t flagseventos;
 QueueHandle_t mailbox_freertos;
 QueueSetHandle_t grupoColas;
@@ -168,11 +168,12 @@ static portTASK_FUNCTION(control, pvParameters){
     uint8_t pui8Frame[MAX_FRAME_SIZE];
     int32_t i32Numdatos;
     PARAM_MENSAJE_ALARMA_COLA parametro;
+    PARAM_MENSAJE_OBJETIVO_CUMPLIDO c;
     EventBits_t flagsActivos;
 
     while(1){
         // Se bloquea esperando cualquier alarma
-        flagsActivos = xEventGroupWaitBits(flag_control, 0x01|0x02, pdTRUE, pdFALSE, portMAX_DELAY);
+        flagsActivos = xEventGroupWaitBits(flag_control, 0x01|0x02|0x04, pdTRUE, pdFALSE, portMAX_DELAY);
 
         // Comprueba qué flag se activó
         if(flagsActivos & 0x01){
@@ -181,14 +182,28 @@ static portTASK_FUNCTION(control, pvParameters){
         } else if(flagsActivos & 0x02){
             parametro.cola = 2;
 
+        }else if(flagsActivos &0x04){
+            vTaskSuspend(handleProductora1);
+            vTaskSuspend(handleProductora2);
         }
 
+        if(flagsActivos &0x04){
+            c.cumplido = true;
+            i32Numdatos = create_frame(pui8Frame, MENSAJE_OBJETIVO_CUMPLIDO, &c, sizeof(c), MAX_FRAME_SIZE);
+                   if(i32Numdatos >= 0){
+                       xSemaphoreTake(mutexUSB, portMAX_DELAY);
+                       send_frame(pui8Frame, i32Numdatos);
+                       xSemaphoreGive(mutexUSB);
+                   }
+
+        }else{
         // Envía mensaje USB
         i32Numdatos = create_frame(pui8Frame, MENSAJE_ALARMA_COLA, &parametro, sizeof(parametro), MAX_FRAME_SIZE);
         if(i32Numdatos >= 0){
             xSemaphoreTake(mutexUSB, portMAX_DELAY);
             send_frame(pui8Frame, i32Numdatos);
             xSemaphoreGive(mutexUSB);
+        }
         }
     }
 }
@@ -236,6 +251,7 @@ static portTASK_FUNCTION(ensamblaje, pvParameters){
         xEventGroupWaitBits(flagseventos, 0x01, pdFALSE, pdTRUE, portMAX_DELAY);
         while(1){
 
+            if(xSemaphoreTake(semaforo_contador, 0) == pdTRUE){
            QueueHandle_t colaActiva =  xQueueSelectFromSet(grupoColas,portMAX_DELAY);
            xQueueReceive(colaActiva, &new, 0);
            if(colaActiva == cola_freertos1){
@@ -254,8 +270,23 @@ static portTASK_FUNCTION(ensamblaje, pvParameters){
                   send_frame(pui8Frame, i32Numdatos);
                   xSemaphoreGive(mutexUSB);
            }
+            }else{
+                xEventGroupSetBits(flag_control, 0x04);
+                vTaskSuspend(NULL);
+            }
         }
 
+}
+void manejador_boton(void){
+
+        GPIOIntClear(BUTTONS_GPIO_BASE, RIGHT_BUTTON);
+        TimerEnable(TIMER4_BASE, TIMER_A);
+
+}
+void manejador_timer4(void){
+    TimerIntClear(TIMER4_BASE, TIMER_TIMA_TIMEOUT);
+    xTaskResumeFromISR(handleProductora1);
+    xTaskResumeFromISR(handleProductora2);
 }
 //*****************************************************************************
 //
@@ -335,6 +366,18 @@ static portTASK_FUNCTION( USBMessageProcessingTask, pvParameters ){
                     MAP_PWMOutputState(PWM0_BASE, PWM_OUT_0_BIT , true);
                     xEventGroupSetBits(flagseventos, 0x01);
 
+                    break;
+
+                case MENSAJE_OBJETIVO_INICIO:
+                    PARAM_MENSAJE_OBJETIVO_INICIO obj;
+
+                    if(check_and_extract_message_param(ptrtoreceivedparam, i32Numdatos, sizeof(obj), &obj) > 0){
+                    for(int i=0; i<obj.objetivo ; i++){
+                        xSemaphoreGive(semaforo_contador);
+
+                    }
+
+                    }
                     break;
                 default:
                 {
@@ -425,6 +468,23 @@ int main(void)
      TimerControlTrigger(TIMER2_BASE, TIMER_A, true);
      TimerEnable(TIMER2_BASE, TIMER_A);
 
+     //Inicializacion boton derecho de la placa
+     MAP_SysCtlPeripheralEnable(BUTTONS_GPIO_PERIPH);
+     MAP_SysCtlPeripheralSleepEnable(BUTTONS_GPIO_PERIPH);
+     GPIOIntRegister(BUTTONS_GPIO_BASE, manejador_boton);
+     GPIOPinTypeGPIOInput(BUTTONS_GPIO_BASE, RIGHT_BUTTON);
+     GPIOIntTypeSet(BUTTONS_GPIO_BASE, RIGHT_BUTTON, GPIO_FALLING_EDGE);
+     GPIOIntEnable(BUTTONS_GPIO_BASE, RIGHT_BUTTON);
+     IntPrioritySet(INT_GPIOF, configMAX_SYSCALL_INTERRUPT_PRIORITY);
+     //inicializacion timer 4
+     MAP_SysCtlPeripheralEnable(SYSCTL_PERIPH_TIMER4);
+     MAP_SysCtlPeripheralSleepEnable(SYSCTL_PERIPH_TIMER4);
+     TimerConfigure(TIMER4_BASE, TIMER_CFG_ONE_SHOT);
+     TimerLoadSet(TIMER4_BASE,TIMER_A,40000000*20);
+     TimerIntRegister(TIMER4_BASE, TIMER_A, manejador_timer4);
+     IntPrioritySet(INT_TIMER4A, configMAX_SYSCALL_INTERRUPT_PRIORITY);
+     TimerIntEnable(TIMER4_BASE, TIMER_TIMA_TIMEOUT);
+
 
 
     semaforo_freertos1 = xSemaphoreCreateBinary();
@@ -437,6 +497,8 @@ int main(void)
                     while(1);  //no hay memoria para los semaforo
 
                 }
+            semaforo_contador = xSemaphoreCreateCounting(100,0);
+            if(semaforo_contador == NULL) while(1);
         mutexUART=xSemaphoreCreateMutex();
           if(NULL == mutexUART)
               while(1);
@@ -485,10 +547,10 @@ int main(void)
     //
     // A partir de aqui se crean las tareas de usuario, y los recursos IPC que se vayan a necesitar
     //
-    if(xTaskCreate(productora, "produce", 256,&params1, tskIDLE_PRIORITY + 1, NULL) != pdPASS){
+    if(xTaskCreate(productora, "produce", 256,&params1, tskIDLE_PRIORITY + 1, &handleProductora1) != pdPASS){
         while(1);
     }
-    if(xTaskCreate(productora, "produce2", 256,&params2, tskIDLE_PRIORITY + 1, NULL) != pdPASS){
+    if(xTaskCreate(productora, "produce2", 256,&params2, tskIDLE_PRIORITY + 1, &handleProductora2) != pdPASS){
             while(1);
         }
     if(xTaskCreate(ensamblaje, "ensambla", 256,NULL, tskIDLE_PRIORITY + 1, NULL) != pdPASS){
