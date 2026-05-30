@@ -37,11 +37,13 @@
 #include "utils/cpu_usage.h"
 #include "utils/cmdline.h"
 #include "utils/uartstdioMod.h"
-
+#include "event_groups.h"
 #include "drivers/rgb.h"
 
 extern SemaphoreHandle_t semaforo_freertos1;
 extern SemaphoreHandle_t semaforo_freertos2;
+extern EventGroupHandle_t traza;
+extern QueueHandle_t mailbox_delay;
 
 // ==============================================================================
 // The CPU usage in percent, in 16.16 fixed point format.
@@ -83,7 +85,29 @@ static int Cmd_free(int argc, char *argv[])
 #if ( configUSE_TRACE_FACILITY == 1 )
 
 extern char *__stack;
-
+static int Cmd_traza(int argc,char *argv[]){
+    if(argc < 2){
+        UARTprintf("Uso: traza [on/off] \n");
+        return 0;
+    }
+    if(strcmp("on", argv[1]) == 0){
+        xEventGroupSetBits(traza, 0x01);
+    }else{
+        xEventGroupClearBits(traza, 0x01);
+    }
+    return 0;
+}
+static int Cmd_modifica_delay(int argc,char *argv[]){
+    if(argc < 3){
+        UARTprintf("Uso: modifica delay [valor] \n");
+        return 0;
+    }
+    if(strcmp("delay", argv[1]) == 0){
+        TickType_t nuevo_delay = atoi(argv[2])/portTICK_PERIOD_MS;
+        xQueueOverwrite(mailbox_delay,&nuevo_delay);
+    }
+    return 0;
+}
 static  int Cmd_reanudar(int argc, char *argv[]){
         if(argc <2){
             UARTprintf("Uso: reanudar <num> \n");
@@ -202,6 +226,8 @@ tCmdLineEntry g_psCmdTable[] =
     { "cpu",      Cmd_cpu,       "      : Muestra el uso de  CPU " },
     { "free",     Cmd_free,      "     : Muestra la memoria libre" },
     {"reanudar",    Cmd_reanudar,"    <num>:Reanuda la tarea productora num"},
+    {"traza",      Cmd_traza,    "Activa la traza"},
+    {"modifica_delay", Cmd_modifica_delay, " Modifica delay en productora"},
 #if ( configUSE_TRACE_FACILITY == 1 )
 	{ "tasks",    Cmd_tasks,     "    : Muestra informacion de las tareas" },
 #endif

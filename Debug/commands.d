@@ -45,6 +45,8 @@ commands.obj: ../driverlib/sysctl.h
 commands.obj: ../utils/cpu_usage.h
 commands.obj: ../utils/cmdline.h
 commands.obj: ../utils/uartstdioMod.h
+commands.obj: /home/estudiante/workspace_v12/practica-TIVA-2026/FreeRTOS/Source/include/event_groups.h
+commands.obj: /home/estudiante/workspace_v12/practica-TIVA-2026/FreeRTOS/Source/include/timers.h
 commands.obj: ../drivers/rgb.h
 
 ../commands.c:
@@ -136,6 +138,10 @@ commands.obj: ../drivers/rgb.h
 ../utils/cmdline.h:
 
 ../utils/uartstdioMod.h:
+
+/home/estudiante/workspace_v12/practica-TIVA-2026/FreeRTOS/Source/include/event_groups.h:
+
+/home/estudiante/workspace_v12/practica-TIVA-2026/FreeRTOS/Source/include/timers.h:
 
 ../drivers/rgb.h:
 
